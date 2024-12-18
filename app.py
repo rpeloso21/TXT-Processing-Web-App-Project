@@ -27,17 +27,30 @@ def normalize_url(url):
 # Function to check the content of the webpage for "horse" or "equine"
 def check_for_horse_or_equine(url):
     try:
-        response = requests.get(url)
+        # Send a GET request with a timeout of 10 seconds
+        response = requests.get(url, timeout=10)
+
+        # Check if the request was successful
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             page_text = soup.get_text().lower()
+            # Check for the presence of 'horse' or 'equine'
             if 'horse' in page_text or 'equine' in page_text:
+                print(f"Found relevant content on: {url}")
                 return True
+            else:
+                print(f"No relevant content found on: {url}")
+                return False
+        else:
+            print(f"Failed to retrieve {url}: HTTP Status {response.status_code}")
             return False
+    except requests.exceptions.Timeout:
+        print(f"Timeout error when trying to reach {url}")
         return False
-    except Exception as e:
+    except requests.exceptions.RequestException as e:
         print(f"Error fetching {url}: {e}")
         return False
+
 
 # Function to write URLs with relevant content to a text file
 def write_relevant_urls_to_file(urls, output_file):
