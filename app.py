@@ -1,115 +1,98 @@
 import os
-import requests
-from bs4 import BeautifulSoup
-from flask import Flask, request, send_from_directory, render_template
+import time
+import asyncio
+import aiohttp
+from flask import Flask, request, render_template, send_file
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'outputs'
-
-# Ensure the folders exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
-# Function to read links from a text file
+# Helper function to read URLs from the uploaded .txt file
 def read_links_from_file(file_path):
     with open(file_path, 'r') as file:
         links = file.readlines()
-    return [link.strip() for link in links]  # Remove any extra whitespace or newline characters
+    return [link.strip() for link in links]
 
-# Function to prepend 'http://' to links starting with 'www.'
-def normalize_url(url):
-    if url.startswith("www."):
-        return "http://" + url
-    return url  # Return the link as is if it's already a full URL (e.g., http:// or https://)
-
-# Function to check the content of the webpage for "horse" or "equine"
-def check_for_horse_or_equine(url):
-    try:
-        # Send a GET request with a timeout of 10 seconds
-        response = requests.get(url, timeout=10)
-
-        # Check if the request was successful
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            page_text = soup.get_text().lower()
-            # Check for the presence of 'horse' or 'equine'
-            if 'horse' in page_text or 'equine' in page_text:
-                print(f"Found relevant content on: {url}")
-                return True
-            else:
-                print(f"No relevant content found on: {url}")
-                return False
-        else:
-            print(f"Failed to retrieve {url}: HTTP Status {response.status_code}")
-            return False
-    except requests.exceptions.Timeout:
-        print(f"Timeout error when trying to reach {url}")
-        return False
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching {url}: {e}")
-        return False
-
-
-# Function to write URLs with relevant content to a text file
-def write_relevant_urls_to_file(urls, output_file):
-    with open(output_file, 'w') as file:
+# Helper function to write relevant URLs to a file
+def write_relevant_urls_to_file(urls, output_file_path):
+    with open(output_file_path, 'a') as file:
         for url in urls:
-            file.write(url + '\n')
+            file.write(url + "\n")
 
-# Function to process the uploaded file and find relevant URLs
-def scrape_links(file_path, output_file):
-    links = read_links_from_file(file_path)
-    relevant_urls = []
+# Function to chunk a list into smaller batches
+def chunk_list(lst, batch_size):
+    for i in range(0, len(lst), batch_size):
+        yield lst[i:i + batch_size]
 
-    for link in links:
-        normalized_link = normalize_url(link)
-        if check_for_horse_or_equine(normalized_link):
-            relevant_urls.append(normalized_link)
+# Asynchronous function to check each URL for "horse" or "equine"
+async def check_for_horse_or_equine_async(url, session):
+    try:
+        async with session.get(url, timeout=10) as response:
+            if response.status == 200:
+                page_text = await response.text()
+                if 'horse' in page_text.lower() or 'equine' in page_text.lower():
+                    print(f"Found relevant content on: {url}")
+                    return url
+            else:
+                print(f"Failed to retrieve {url}")
+            return None
+    except asyncio.TimeoutError:
+        print(f"Timeout error for {url}")
+        return None
+    except Exception as e:
+        print(f"Error fetching {url}: {e}")
+        return None
 
-    if relevant_urls:
-        write_relevant_urls_to_file(relevant_urls, output_file)
-        return output_file
-    return None
+# Function to process URLs in batches asynchronously
+async def process_urls_in_batches(links, batch_size=50):
+    # Create an aiohttp session for making async requests
+    async with aiohttp.ClientSession() as session:
+        # Split the URLs into smaller chunks (batches)
+        for batch in chunk_list(links, batch_size):
+            # Process each batch concurrently
+            tasks = [check_for_horse_or_equine_async(url, session) for url in batch]
+            results = await asyncio.gather(*tasks)  # Wait for all requests to complete
 
-# Route to upload file
+            # Filter out None values (URLs that don't contain relevant content)
+            relevant_urls = [url for url in results if url]
+
+            # Write the relevant URLs to a file
+            if relevant_urls:
+                write_relevant_urls_to_file(relevant_urls, 'relevant_urls.txt')
+                print(f"Relevant URLs in this batch: {relevant_urls}")
+
+            # Optional: sleep between batches to prevent overwhelming the server
+            await asyncio.sleep(2)  # Sleep for 2 seconds between batches (optional)
+
+# Flask route to handle file upload and URL processing
 @app.route('/')
-def upload_form():
+def index():
     return render_template('upload.html')
 
-# Route to handle the file upload and processing
+# Flask route to handle file upload and process URLs
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
         return "No file part", 400
-
     file = request.files['file']
     if file.filename == '':
         return "No selected file", 400
 
-    if file and file.filename.endswith('.txt'):
-        # Save the uploaded file
-        uploaded_file_path = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(uploaded_file_path)
+    # Save the uploaded file to a temporary directory
+    filename = secure_filename(file.filename)
+    uploaded_file_path = os.path.join('uploads', filename)
+    os.makedirs('uploads', exist_ok=True)
+    file.save(uploaded_file_path)
 
-        # Process the file and generate the output
-        output_file_path = os.path.join(OUTPUT_FOLDER, 'relevant_urls.txt')
-        result_file = scrape_links(uploaded_file_path, output_file_path)
+    # Read the links from the uploaded file
+    links = read_links_from_file(uploaded_file_path)
 
-        if result_file:
-            # Provide the download link for the processed file
-            return render_template('download.html', output_file=result_file)
+    # Process the links asynchronously in batches
+    asyncio.run(process_urls_in_batches(links, batch_size=50))  # Process in batches of 50
 
-        return "No relevant URLs found.", 400
+    # Provide the results file for download
+    return send_file('relevant_urls.txt', as_attachment=True)
 
-    return "Invalid file type. Only .txt files are allowed.", 400
-
-# Route to serve the processed output file
-@app.route('/download/<filename>')
-def download_file(filename):
-    return send_from_directory(OUTPUT_FOLDER, filename)
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    app.run(debug=True, host='0.0.0.0', port=5000)
 
