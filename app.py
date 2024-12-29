@@ -44,7 +44,7 @@ async def check_for_horse_or_equine_async(url, session):
         return None
 
 # Function to process URLs in batches asynchronously
-async def process_urls_in_batches(links, batch_size=50):
+async def process_urls_in_batches(links, batch_size=10):
     # Create an aiohttp session for making async requests
     async with aiohttp.ClientSession() as session:
         # Split the URLs into smaller chunks (batches)
@@ -88,11 +88,11 @@ def upload_file():
     links = read_links_from_file(uploaded_file_path)
 
     # Process the links asynchronously in batches
-    asyncio.run(process_urls_in_batches(links, batch_size=50))  # Process in batches of 50
+    asyncio.run(process_urls_in_batches(links, batch_size=10))  # Process in batches of 10
 
     # Provide the results file for download
     return send_file('relevant_urls.txt', as_attachment=True)
 
 if __name__ == "__main__":
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True)
 
